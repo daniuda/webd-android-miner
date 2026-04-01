@@ -1,0 +1,26 @@
+# Build outputs
+build/
+app/build/
+*.apk
+*.aab
+*.ap_
+
+# Local config
+local.properties
+.gradle/
+gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+
+# Keystore / secrets
+*.jks
+*.keystore
+*.p12
+
+# Compiled classes
+*.class
