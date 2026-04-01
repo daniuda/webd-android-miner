@@ -40,6 +40,16 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.gson)
 
+    // Socket.IO v1.x = compatibil cu socket.io server 2.x (EIO v3)
+    implementation("io.socket:socket.io-client:1.0.1") {
+        exclude(group = "org.json", module = "json")
+        exclude(group = "com.squareup.okhttp3")
+    }
+    // ed25519 semnare PoS
+    implementation("net.i2p.crypto:eddsa:0.3.0")
+    // Argon2d pentru PoW hashing
+    implementation("de.mkammerer:argon2-jvm:2.11")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.junit.ext)
 }

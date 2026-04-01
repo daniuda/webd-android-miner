@@ -12,6 +12,8 @@ import com.webdollar.miner.data.MinerPrefs
 import com.webdollar.miner.mining.MinerStats
 import com.webdollar.miner.mining.MinerWorker
 import com.webdollar.miner.network.PoolClient
+import com.webdollar.miner.mining.LegacyMinerWorker
+import com.webdollar.miner.network.LegacyPoolClient
 import com.webdollar.miner.ui.MainActivity
 import com.webdollar.miner.util.SafetyMonitor
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +27,7 @@ private const val NOTIF_ID         = 1001
 class MinerService : LifecycleService() {
 
     private lateinit var worker: MinerWorker
+    private var legacyWorker: LegacyMinerWorker? = null
     private lateinit var safety: SafetyMonitor
     private val binder = LocalBinder()
     private var isMining = false
@@ -43,7 +46,7 @@ class MinerService : LifecycleService() {
 
         // Observă stats și actualizează notificarea
         lifecycleScope.launch {
-            worker.stats.collectLatest { stats ->
+            activeStatsFlow().collectLatest { stats ->
                 updateNotification(stats)
 
                 // Safety: oprire automată dacă nu e la priză (și setarea e activă)
@@ -89,6 +92,19 @@ class MinerService : LifecycleService() {
     fun startMining() {
         if (isMining) return
 
+        // Reinițializează worker-ul în funcție de tipul pool-ului
+        val poolUrl = MinerPrefs.poolUrl
+        if (poolUrl.startsWith("pool/")) {
+            val parsed = LegacyPoolClient.parse(poolUrl)
+            if (parsed != null) {
+                legacyWorker = LegacyMinerWorker(parsed)
+            } else {
+                Log.w(TAG, "Adresă pool legacy invalidă: $poolUrl")
+            }
+        } else {
+            legacyWorker = null
+        }
+
         // Verificare safety la start
         if (MinerPrefs.onlyWhenCharging && !safety.isCharging()) {
             Log.i(TAG, "Nu e la priză — mining nu pornit")
@@ -97,19 +113,27 @@ class MinerService : LifecycleService() {
         }
 
         startForeground(NOTIF_ID, buildNotification(MinerStats(running = true)))
-        worker.start(MinerPrefs.threadCount)
+        val lw = legacyWorker
+        if (lw != null) {
+            lw.start(MinerPrefs.threadCount)
+        } else {
+            worker.start(MinerPrefs.threadCount)
+        }
         isMining = true
         Log.i(TAG, "Mining pornit")
     }
 
     fun stopMining() {
         if (!isMining) return
-        worker.stop()
+        legacyWorker?.stop() ?: worker.stop()
         isMining = false
         Log.i(TAG, "Mining oprit")
     }
 
-    fun statsFlow(): StateFlow<MinerStats> = worker.stats
+    fun statsFlow(): StateFlow<MinerStats> = activeStatsFlow()
+
+    private fun activeStatsFlow(): StateFlow<MinerStats> =
+        legacyWorker?.stats ?: worker.stats
 
     fun isMiningRunning(): Boolean = isMining
 
