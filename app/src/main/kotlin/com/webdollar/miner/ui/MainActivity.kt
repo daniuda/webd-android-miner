@@ -9,7 +9,6 @@ import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.IBinder
 import android.widget.EditText
-import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.activity.viewModels
@@ -20,6 +19,8 @@ import com.webdollar.miner.data.MinerPrefs
 import com.webdollar.miner.databinding.ActivityMainBinding
 import com.webdollar.miner.mining.MinerStats
 import com.webdollar.miner.service.MinerService
+import com.webdollar.miner.util.LegacyWalletFormat
+import com.webdollar.miner.util.LocalWalletCipher
 import com.webdollar.miner.util.WalletBackupCrypto
 import com.webdollar.miner.util.WalletBackupPayload
 import com.webdollar.miner.util.WalletGenerator
@@ -76,15 +77,10 @@ class MainActivity : AppCompatActivity() {
         binding.swOnlyCharging.isChecked = MinerPrefs.onlyWhenCharging
         refreshWalletBackupPreview()
 
-        val items = listOf("1", "2", "3", "4")
-        binding.spThreads.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, items)
-        binding.spThreads.setSelection((MinerPrefs.threadCount - 1).coerceIn(0, 3))
-
         binding.btnSave.setOnClickListener {
             vm.setPoolUrl(binding.etPoolUrl.text.toString())
             vm.setPoolKey(binding.etPoolKey.text.toString())
             vm.setWalletAddress(binding.etWallet.text.toString())
-            vm.setThreadCount(binding.spThreads.selectedItem.toString().toInt())
             vm.setOnlyWhenCharging(binding.swOnlyCharging.isChecked)
             vm.saveConfig()
             Toast.makeText(this, "Config salvat", Toast.LENGTH_SHORT).show()
@@ -133,45 +129,79 @@ class MainActivity : AppCompatActivity() {
             showPassphraseDialog("Parolă export backup") { passphrase ->
                 runCatching {
                     val dir = getExternalFilesDir("wallet-backups") ?: filesDir
-                    val out = File(dir, "wallet-backup-${System.currentTimeMillis()}.webd.enc")
+                    val outOld = File(dir, "wallet-${System.currentTimeMillis()}.webd")
+                    val outEnc = File(dir, "wallet-${System.currentTimeMillis()}.webd.enc")
+
+                    // 1) Export format vechi (legacy) necriptat
+                    val legacyJson = LegacyWalletFormat.exportFromSecretHex(secret)
+                    outOld.writeText(legacyJson)
+
+                    // 2) Export criptat (backup) + activare mod mining cu parolă
                     val payload = WalletBackupPayload(
                         address = address,
                         secretHex = secret,
                         createdAt = System.currentTimeMillis()
                     )
-                    WalletBackupCrypto.exportEncrypted(payload, passphrase, out)
-                    out
+                    WalletBackupCrypto.exportEncrypted(payload, passphrase, outEnc)
+
+                    // 3) Salvează local wallet-ul criptat și intră în password mode
+                    MinerPrefs.walletSecretEncrypted = LocalWalletCipher.encryptSecret(secret, passphrase)
+                    MinerPrefs.walletPasswordMode = true
+                    MinerPrefs.walletSecret = ""
+                    refreshWalletBackupPreview()
+
+                    Pair(outOld, outEnc)
                 }.onSuccess { file ->
-                    Toast.makeText(this, "Backup criptat salvat: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(
+                        this,
+                        "Export legacy (.webd) + backup criptat salvate: ${file.first.absolutePath}",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }.onFailure {
                     Toast.makeText(this, "Export eșuat: ${it.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
 
-        binding.btnImportSecret.setOnClickListener {
-            showSecretImportDialog()
-        }
+        binding.btnImportSecret.setOnClickListener { showLegacyImportDialog() }
 
         binding.btnStart.setOnClickListener {
             if (binding.etWallet.text.isNullOrBlank()) {
                 Toast.makeText(this, "Wallet address este obligatoriu", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            // salvăm config înainte de start
-            vm.setPoolUrl(binding.etPoolUrl.text.toString())
-            vm.setPoolKey(binding.etPoolKey.text.toString())
-            vm.setWalletAddress(binding.etWallet.text.toString())
-            vm.setThreadCount(binding.spThreads.selectedItem.toString().toInt())
-            vm.setOnlyWhenCharging(binding.swOnlyCharging.isChecked)
-            vm.saveConfig()
 
-            ContextCompat.startForegroundService(this, MinerService.startIntent(this))
+            if (MinerPrefs.walletPasswordMode && MinerPrefs.walletSecret.isBlank()) {
+                showPassphraseDialog("Deblochează wallet pentru mining") { pass ->
+                    runCatching {
+                        val secret = LocalWalletCipher.decryptSecret(MinerPrefs.walletSecretEncrypted, pass)
+                        val w = WalletGenerator.fromSecretHex(secret)
+                        MinerPrefs.walletSecret = w.secretHex
+                        MinerPrefs.walletAddress = w.address
+                        binding.etWallet.setText(w.address)
+                    }.onSuccess {
+                        startMiningNow()
+                    }.onFailure {
+                        Toast.makeText(this, "Parolă invalidă sau wallet corupt", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } else {
+                startMiningNow()
+            }
         }
 
         binding.btnStop.setOnClickListener {
             startService(MinerService.stopIntent(this))
         }
+    }
+
+    private fun startMiningNow() {
+        vm.setPoolUrl(binding.etPoolUrl.text.toString())
+        vm.setPoolKey(binding.etPoolKey.text.toString())
+        vm.setWalletAddress(binding.etWallet.text.toString())
+        vm.setOnlyWhenCharging(binding.swOnlyCharging.isChecked)
+        vm.saveConfig()
+        ContextCompat.startForegroundService(this, MinerService.startIntent(this))
     }
 
     private fun observeStats() {
@@ -197,7 +227,11 @@ class MainActivity : AppCompatActivity() {
     private fun refreshWalletBackupPreview() {
         val secret = MinerPrefs.walletSecret
         binding.tvWalletBackup.text = if (secret.isBlank()) {
-            "Backup secret: (none)"
+            if (MinerPrefs.walletPasswordMode && MinerPrefs.walletSecretEncrypted.isNotBlank()) {
+                "Backup secret: criptat local (password mode ON)"
+            } else {
+                "Backup secret: (none)"
+            }
         } else {
             val head = secret.take(10)
             val tail = secret.takeLast(6)
@@ -230,25 +264,27 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun showSecretImportDialog() {
+    private fun showLegacyImportDialog() {
         val input = EditText(this).apply {
-            hint = "Introdu secret hex (64 caractere)"
+            hint = "Lipește format vechi JSON / privateKeyWIF / secret hex"
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
         }
         AlertDialog.Builder(this)
-            .setTitle("Import wallet din secret")
+            .setTitle("Import wallet (format vechi)")
             .setView(input)
             .setPositiveButton("Import") { _, _ ->
-                val secret = input.text?.toString().orEmpty()
+                val raw = input.text?.toString().orEmpty()
                 runCatching {
-                    WalletGenerator.fromSecretHex(secret)
+                    LegacyWalletFormat.importToWallet(raw)
                 }.onSuccess { wallet ->
                     MinerPrefs.walletSecret = wallet.secretHex
                     MinerPrefs.walletAddress = wallet.address
+                    MinerPrefs.walletPasswordMode = false
+                    MinerPrefs.walletSecretEncrypted = ""
                     vm.setWalletAddress(wallet.address)
                     binding.etWallet.setText(wallet.address)
                     refreshWalletBackupPreview()
-                    Toast.makeText(this, "Wallet importat și salvat", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Wallet legacy importat", Toast.LENGTH_SHORT).show()
                 }.onFailure {
                     Toast.makeText(this, "Import eșuat: ${it.message}", Toast.LENGTH_LONG).show()
                 }

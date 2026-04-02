@@ -42,6 +42,29 @@ object WalletGenerator {
         return fromSeed(clean.hexToBytes())
     }
 
+    fun privateKeyWifFromSecretHex(secretHex: String): String {
+        val seed = secretHex.trim().lowercase().hexToBytes()
+        require(seed.size == 32) { "Secret invalid" }
+        val versionAndKey = byteArrayOf(0x80.toByte()) + seed
+        val checksum = sha256d(versionAndKey).copyOfRange(0, 4)
+        val raw = versionAndKey + checksum
+        return Base64.encodeToString(raw, Base64.NO_WRAP)
+    }
+
+    fun fromPrivateKeyWif(privateKeyWif: String): GeneratedWallet {
+        val raw = Base64.decode(privateKeyWif.trim(), Base64.DEFAULT)
+        require(raw.size == 37) { "privateKeyWIF invalid" }
+        require(raw[0] == 0x80.toByte()) { "privateKeyWIF prefix invalid" }
+
+        val body = raw.copyOfRange(0, 33)
+        val cks = raw.copyOfRange(33, 37)
+        val expect = sha256d(body).copyOfRange(0, 4)
+        require(cks.contentEquals(expect)) { "privateKeyWIF checksum invalid" }
+
+        val seed = raw.copyOfRange(1, 33)
+        return fromSeed(seed)
+    }
+
     fun fromSeed(seed: ByteArray): GeneratedWallet {
         require(seed.size == 32) { "Seed trebuie să aibă 32 bytes" }
 

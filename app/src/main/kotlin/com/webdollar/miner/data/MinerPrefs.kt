@@ -28,6 +28,16 @@ object MinerPrefs {
         get() = prefs.getString("wallet_secret", "") ?: ""
         set(v) = prefs.edit().putString("wallet_secret", v).apply()
 
+    /** Secret wallet criptat local cu parola (JSON envelope). */
+    var walletSecretEncrypted: String
+        get() = prefs.getString("wallet_secret_encrypted", "") ?: ""
+        set(v) = prefs.edit().putString("wallet_secret_encrypted", v).apply()
+
+    /** Dacă true, mining pornește doar după deblocarea cu parola. */
+    var walletPasswordMode: Boolean
+        get() = prefs.getBoolean("wallet_password_mode", false)
+        set(v) = prefs.edit().putBoolean("wallet_password_mode", v).apply()
+
     /** Cheie de autentificare pool (shared key) */
     var poolKey: String
         get() = prefs.getString("pool_key", "") ?: ""
@@ -42,11 +52,6 @@ object MinerPrefs {
     var workerToken: String
         get() = prefs.getString("worker_token", "") ?: ""
         set(v) = prefs.edit().putString("worker_token", v).apply()
-
-    /** Număr de thread-uri de mining (1..4) */
-    var threadCount: Int
-        get() = prefs.getInt("thread_count", 1)
-        set(v) = prefs.edit().putInt("thread_count", v.coerceIn(1, 4)).apply()
 
     /** Mining numai când e conectat la priză */
     var onlyWhenCharging: Boolean

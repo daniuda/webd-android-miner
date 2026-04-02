@@ -10,7 +10,6 @@ data class ConfigState(
     val poolUrl: String = "",
     val poolKey: String = "",
     val walletAddress: String = "",
-    val threadCount: Int = 1,
     val onlyWhenCharging: Boolean = true
 )
 
@@ -21,7 +20,6 @@ class MainViewModel : ViewModel() {
             poolUrl = MinerPrefs.poolUrl,
             poolKey = MinerPrefs.poolKey,
             walletAddress = MinerPrefs.walletAddress,
-            threadCount = MinerPrefs.threadCount,
             onlyWhenCharging = MinerPrefs.onlyWhenCharging
         )
     )
@@ -39,10 +37,6 @@ class MainViewModel : ViewModel() {
         _config.value = _config.value.copy(walletAddress = v)
     }
 
-    fun setThreadCount(v: Int) {
-        _config.value = _config.value.copy(threadCount = v.coerceIn(1, 4))
-    }
-
     fun setOnlyWhenCharging(v: Boolean) {
         _config.value = _config.value.copy(onlyWhenCharging = v)
     }
@@ -51,7 +45,6 @@ class MainViewModel : ViewModel() {
         MinerPrefs.poolUrl = _config.value.poolUrl.trim()
         MinerPrefs.poolKey = _config.value.poolKey.trim()
         MinerPrefs.walletAddress = _config.value.walletAddress.trim()
-        MinerPrefs.threadCount = _config.value.threadCount
         MinerPrefs.onlyWhenCharging = _config.value.onlyWhenCharging
     }
 }

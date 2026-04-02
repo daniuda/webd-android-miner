@@ -115,9 +115,9 @@ class MinerService : LifecycleService() {
         startForeground(NOTIF_ID, buildNotification(MinerStats(running = true)))
         val lw = legacyWorker
         if (lw != null) {
-            lw.start(MinerPrefs.threadCount)
+            lw.start(1)
         } else {
-            worker.start(MinerPrefs.threadCount)
+            worker.start(1)
         }
         isMining = true
         Log.i(TAG, "Mining pornit")
