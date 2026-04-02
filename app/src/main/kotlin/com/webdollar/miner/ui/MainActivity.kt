@@ -6,10 +6,13 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.IBinder
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -37,6 +40,20 @@ class MainActivity : AppCompatActivity() {
     private var service: MinerService? = null
     private var bound = false
     private var statsJob: Job? = null
+
+    private val importWebdLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@registerForActivityResult
+        runCatching {
+            contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: throw IllegalArgumentException("Nu pot citi fișierul")
+        }.onSuccess { raw ->
+            importLegacyRaw(raw)
+        }.onFailure {
+            Toast.makeText(this, "Import fișier eșuat: ${it.message}", Toast.LENGTH_LONG).show()
+        }
+    }
 
     private val conn = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -126,44 +143,64 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Generează sau importă întâi un wallet", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            showPassphraseDialog("Parolă export backup") { passphrase ->
-                runCatching {
-                    val dir = getExternalFilesDir("wallet-backups") ?: filesDir
-                    val outOld = File(dir, "wallet-${System.currentTimeMillis()}.webd")
-                    val outEnc = File(dir, "wallet-${System.currentTimeMillis()}.webd.enc")
 
-                    // 1) Export format vechi (legacy) necriptat
-                    val legacyJson = LegacyWalletFormat.exportFromSecretHex(secret)
-                    outOld.writeText(legacyJson)
+            AlertDialog.Builder(this)
+                .setTitle("Export wallet")
+                .setItems(arrayOf("Doar .webd (fără criptare)", " .webd + backup criptat (.enc)")) { _, which ->
+                    if (which == 0) {
+                        runCatching {
+                            val dir = getExternalFilesDir("wallet-backups") ?: filesDir
+                            val outOld = File(dir, "wallet-${System.currentTimeMillis()}.webd")
+                            val legacyJson = LegacyWalletFormat.exportFromSecretHex(secret)
+                            outOld.writeText(legacyJson)
+                            outOld
+                        }.onSuccess { file ->
+                            Toast.makeText(this, "Export .webd salvat: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+                        }.onFailure {
+                            Toast.makeText(this, "Export eșuat: ${it.message}", Toast.LENGTH_LONG).show()
+                        }
+                        return@setItems
+                    }
 
-                    // 2) Export criptat (backup) + activare mod mining cu parolă
-                    val payload = WalletBackupPayload(
-                        address = address,
-                        secretHex = secret,
-                        createdAt = System.currentTimeMillis()
-                    )
-                    WalletBackupCrypto.exportEncrypted(payload, passphrase, outEnc)
+                    showPassphraseDialog("Parolă export backup") { passphrase ->
+                        runCatching {
+                            val dir = getExternalFilesDir("wallet-backups") ?: filesDir
+                            val outOld = File(dir, "wallet-${System.currentTimeMillis()}.webd")
+                            val outEnc = File(dir, "wallet-${System.currentTimeMillis()}.webd.enc")
 
-                    // 3) Salvează local wallet-ul criptat și intră în password mode
-                    MinerPrefs.walletSecretEncrypted = LocalWalletCipher.encryptSecret(secret, passphrase)
-                    MinerPrefs.walletPasswordMode = true
-                    MinerPrefs.walletSecret = ""
-                    refreshWalletBackupPreview()
+                            // 1) Export format vechi (legacy) necriptat
+                            val legacyJson = LegacyWalletFormat.exportFromSecretHex(secret)
+                            outOld.writeText(legacyJson)
 
-                    Pair(outOld, outEnc)
-                }.onSuccess { file ->
-                    Toast.makeText(
-                        this,
-                        "Export legacy (.webd) + backup criptat salvate: ${file.first.absolutePath}",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }.onFailure {
-                    Toast.makeText(this, "Export eșuat: ${it.message}", Toast.LENGTH_LONG).show()
+                            // 2) Export criptat (backup)
+                            val payload = WalletBackupPayload(
+                                address = address,
+                                secretHex = secret,
+                                createdAt = System.currentTimeMillis()
+                            )
+                            WalletBackupCrypto.exportEncrypted(payload, passphrase, outEnc)
+
+                            // 3) Opțional: activează password mode pentru unlock la mining
+                            MinerPrefs.walletSecretEncrypted = LocalWalletCipher.encryptSecret(secret, passphrase)
+                            MinerPrefs.walletPasswordMode = true
+
+                            Pair(outOld, outEnc)
+                        }.onSuccess { file ->
+                            Toast.makeText(
+                                this,
+                                "Export .webd + .enc salvate: ${file.first.absolutePath}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }.onFailure {
+                            Toast.makeText(this, "Export eșuat: ${it.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
                 }
-            }
+                .show()
+            refreshWalletBackupPreview()
         }
 
-        binding.btnImportSecret.setOnClickListener { showLegacyImportDialog() }
+        binding.btnImportSecret.setOnClickListener { showLegacyImportOptionsDialog() }
 
         binding.btnStart.setOnClickListener {
             if (binding.etWallet.text.isNullOrBlank()) {
@@ -201,7 +238,25 @@ class MainActivity : AppCompatActivity() {
         vm.setWalletAddress(binding.etWallet.text.toString())
         vm.setOnlyWhenCharging(binding.swOnlyCharging.isChecked)
         vm.saveConfig()
-        ContextCompat.startForegroundService(this, MinerService.startIntent(this))
+
+        // Feedback imediat pentru cel mai frecvent motiv de "nu pornește".
+        if (MinerPrefs.onlyWhenCharging && !isDeviceCharging()) {
+            Toast.makeText(this, "Mining este setat doar la priză. Conectează telefonul sau dezactivează opțiunea.", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        runCatching {
+            ContextCompat.startForegroundService(this, MinerService.startIntent(this))
+        }.onFailure {
+            Toast.makeText(this, "Start eșuat: ${it.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun isDeviceCharging(): Boolean {
+        val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return false
+        val status = i.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
+        return status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
     }
 
     private fun observeStats() {
@@ -274,22 +329,38 @@ class MainActivity : AppCompatActivity() {
             .setView(input)
             .setPositiveButton("Import") { _, _ ->
                 val raw = input.text?.toString().orEmpty()
-                runCatching {
-                    LegacyWalletFormat.importToWallet(raw)
-                }.onSuccess { wallet ->
-                    MinerPrefs.walletSecret = wallet.secretHex
-                    MinerPrefs.walletAddress = wallet.address
-                    MinerPrefs.walletPasswordMode = false
-                    MinerPrefs.walletSecretEncrypted = ""
-                    vm.setWalletAddress(wallet.address)
-                    binding.etWallet.setText(wallet.address)
-                    refreshWalletBackupPreview()
-                    Toast.makeText(this, "Wallet legacy importat", Toast.LENGTH_SHORT).show()
-                }.onFailure {
-                    Toast.makeText(this, "Import eșuat: ${it.message}", Toast.LENGTH_LONG).show()
-                }
+                importLegacyRaw(raw)
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun showLegacyImportOptionsDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Import necriptat")
+            .setItems(arrayOf("Din text", "Din fișier .webd")) { _, which ->
+                when (which) {
+                    0 -> showLegacyImportDialog()
+                    1 -> importWebdLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                }
+            }
+            .show()
+    }
+
+    private fun importLegacyRaw(raw: String) {
+        runCatching {
+            LegacyWalletFormat.importToWallet(raw)
+        }.onSuccess { wallet ->
+            MinerPrefs.walletSecret = wallet.secretHex
+            MinerPrefs.walletAddress = wallet.address
+            MinerPrefs.walletPasswordMode = false
+            MinerPrefs.walletSecretEncrypted = ""
+            vm.setWalletAddress(wallet.address)
+            binding.etWallet.setText(wallet.address)
+            refreshWalletBackupPreview()
+            Toast.makeText(this, "Wallet legacy importat", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(this, "Import eșuat: ${it.message}", Toast.LENGTH_LONG).show()
+        }
     }
 }

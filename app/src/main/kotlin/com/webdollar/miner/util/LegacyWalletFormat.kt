@@ -17,7 +17,7 @@ object LegacyWalletFormat {
         val wallet = WalletGenerator.fromSecretHex(secretHex)
         val legacy = LegacyWalletFile(
             address = wallet.address,
-            privateKey = wallet.secretHex,
+            privateKey = WalletGenerator.legacyPrivateKeyHexFromSecretHex(wallet.secretHex),
             publicKey = wallet.publicKeyHex,
             unencodedAddress = wallet.unencodedAddressHex
         )
@@ -28,10 +28,19 @@ object LegacyWalletFormat {
         val text = raw.trim()
         if (text.startsWith("{")) {
             val parsed = gson.fromJson(text, LegacyWalletFile::class.java)
-            if (parsed.version == "0.1" && parsed.privateKey.matches(Regex("^[0-9a-fA-F]{64}$"))) {
-                return WalletGenerator.fromSecretHex(parsed.privateKey)
+            if (parsed.version == "0.1") {
+                val pk = parsed.privateKey.trim()
+                if (pk.matches(Regex("^[0-9a-fA-F]{64}$"))) {
+                    return WalletGenerator.fromSecretHex(pk)
+                }
+                if (pk.matches(Regex("^[0-9a-fA-F]{138}$"))) {
+                    return WalletGenerator.fromLegacyPrivateKeyHex(pk)
+                }
             }
             throw IllegalArgumentException("Format JSON legacy invalid")
+        }
+        if (text.matches(Regex("^[0-9a-fA-F]{138}$"))) {
+            return WalletGenerator.fromLegacyPrivateKeyHex(text)
         }
         if (text.matches(Regex("^[0-9a-fA-F]{64}$"))) {
             return WalletGenerator.fromSecretHex(text)

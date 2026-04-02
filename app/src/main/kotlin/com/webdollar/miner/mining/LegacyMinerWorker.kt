@@ -97,28 +97,62 @@ class LegacyMinerWorker(private val parsed: ParsedPoolAddress) {
         lc.connect(wallet.address, listOf(wallet.unencodedAddress))
         updateError("Conectare la ${parsed.poolName}...")
 
-        // Asteaptă conectarea
+        // Așteaptă conectarea, dar nu ieși din worker după 30s - păstrează retry automat.
         var waited = 0
-        while (!lc.connected.value && waited < 30_000 && currentCoroutineContext().isActive) {
+        while (!lc.connected.value && currentCoroutineContext().isActive) {
             delay(500)
             waited += 500
+
+            if (waited % 5000 == 0) {
+                val lastErr = lc.error.value
+                if (lastErr.isNotBlank()) {
+                    updateError("Conectare la pool... $lastErr")
+                } else {
+                    updateError("Conectare la pool... (${waited / 1000}s)")
+                }
+            }
+
+            if (waited >= 30_000) {
+                val lastErr = lc.error.value
+                updateError(
+                    if (lastErr.isNotBlank()) {
+                        "Nu s-a putut conecta în 30s, retry automat... $lastErr"
+                    } else {
+                        "Nu s-a putut conecta în 30s, retry automat..."
+                    }
+                )
+                waited = 0
+            }
         }
-        if (!lc.connected.value) {
-            updateError("Nu s-a putut conecta la pool în 30s")
-            return
-        }
+
+        if (!currentCoroutineContext().isActive) return
 
         // Cere work inițial după 1s (hello-pool durează puțin)
         delay(1000)
         lc.requestWork()
 
         // Loop de mining
+        var idleTicks = 0
         while (currentCoroutineContext().isActive) {
+            if (!lc.connected.value) {
+                updateError("Reconectare la pool...")
+                delay(1000)
+                continue
+            }
+
             val work = currentWork.get()
             if (work == null) {
+                idleTicks++
+                // Dacă nu vine work push, cere periodic explicit.
+                if (idleTicks >= 10) {
+                    lc.requestWork()
+                    idleTicks = 0
+                }
                 delay(500)
                 continue
             }
+
+            idleTicks = 0
 
             try {
                 if (work.isPow) {

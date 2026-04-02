@@ -51,6 +51,35 @@ object WalletGenerator {
         return Base64.encodeToString(raw, Base64.NO_WRAP)
     }
 
+    /**
+     * Format legacy din fișiere .webd:
+     * privateKey hex = 0x80 + (seed32 + pub32) + checksum4
+     */
+    fun legacyPrivateKeyHexFromSecretHex(secretHex: String): String {
+        val seed = secretHex.trim().lowercase().hexToBytes()
+        require(seed.size == 32) { "Secret invalid" }
+        val pub = publicKeyBytesFromSeed(seed)
+        val key64 = seed + pub
+        val body = byteArrayOf(0x80.toByte()) + key64
+        val checksum = sha256d(body).copyOfRange(0, 4)
+        return (body + checksum).toHex()
+    }
+
+    fun fromLegacyPrivateKeyHex(privateKeyHex: String): GeneratedWallet {
+        val raw = privateKeyHex.trim().lowercase().hexToBytes()
+        require(raw.size == 69) { "privateKey legacy invalid" }
+        require(raw[0] == 0x80.toByte()) { "privateKey legacy prefix invalid" }
+
+        val body = raw.copyOfRange(0, 65)
+        val cks = raw.copyOfRange(65, 69)
+        val expect = sha256d(body).copyOfRange(0, 4)
+        require(cks.contentEquals(expect)) { "privateKey legacy checksum invalid" }
+
+        val key64 = raw.copyOfRange(1, 65)
+        val seed = key64.copyOfRange(0, 32)
+        return fromSeed(seed)
+    }
+
     fun fromPrivateKeyWif(privateKeyWif: String): GeneratedWallet {
         val raw = Base64.decode(privateKeyWif.trim(), Base64.DEFAULT)
         require(raw.size == 37) { "privateKeyWIF invalid" }

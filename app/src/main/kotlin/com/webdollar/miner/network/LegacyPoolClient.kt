@@ -104,9 +104,11 @@ class LegacyPoolClient(private val parsed: ParsedPoolAddress) {
                 .build()
 
             val opts = IO.Options().apply {
-                transports = arrayOf("websocket")
+                // Lasă Socket.IO să facă fallback polling->websocket când websocket direct e blocat.
                 reconnection = true
+                reconnectionAttempts = Int.MAX_VALUE
                 reconnectionDelay = 3000
+                reconnectionDelayMax = 10000
                 timeout = 30000
                 callFactory = okClient
                 webSocketFactory = okClient
